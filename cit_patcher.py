@@ -1,234 +1,162 @@
-#!/usr/bin/env python3
 import os
-import sys
 import json
 import shutil
-import re
-from pathlib import Path
+import tempfile
+import zipfile
+import configparser
 
-def load_config(script_dir):
-    cfg_path = Path(script_dir) / "config.json"
-    if not cfg_path.exists():
-        default = {
-            "prompt_for_generated_name": True,
-            "generated_name_default": "generated-resources",
-            "patched_prefix": "Patched ",
-            "clean_mode": "B",
-            "verbose": True
-        }
-        cfg_path.write_text(json.dumps(default, indent=2))
-        return default
-    return json.loads(cfg_path.read_text())
-
-def log(msg):
-    if config.get("verbose", True):
-        print(msg)
-
-def is_numeric_segment(s):
-    return any(ch.isdigit() for ch in s)
-
-def properties_when_name_from_filename(filename_no_ext):
-    parts = filename_no_ext.split('_')
-    idx = None
-    for i, p in enumerate(parts):
-        if is_numeric_segment(p):
-            idx = i
-            break
-    if idx is None:
-        return ' '.join([p.capitalize() for p in parts if p != ''])
-    else:
-        head_parts = parts[:idx]
-        tail_parts = parts[idx:]
-        head = ' '.join([p.capitalize() for p in head_parts if p != ''])
-        tail = '_'.join(tail_parts)
-        return f"{head}_{tail}" if head else tail
+def load_config():
+    config = configparser.ConfigParser()
+    config.read('config.ini')
+    return config
 
 def ensure_dir(path):
-    Path(path).mkdir(parents=True, exist_ok=True)
+    os.makedirs(path, exist_ok=True)
 
-def parse_properties_file(path):
+def copy_root_files(src_root, dest_root):
+    for item in os.listdir(src_root):
+        src_item = os.path.join(src_root, item)
+        dest_item = os.path.join(dest_root, item)
+        if os.path.isfile(src_item) and item != "assets":
+            shutil.copy2(src_item, dest_item)
+
+def parse_properties(file_path):
     data = {}
-    for raw in Path(path).read_text(encoding='utf-8', errors='ignore').splitlines():
-        line = raw.strip()
-        if not line or line.startswith('#') or line.startswith('!'):
-            continue
-        if '=' in line:
-            k, v = line.split('=', 1)
-            data[k.strip()] = v.strip()
+    with open(file_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            data[key.strip()] = value.strip()
     return data
 
-def safe_load_json(path):
-    try:
-        return json.loads(Path(path).read_text(encoding='utf-8'))
-    except Exception:
-        return None
+def transform_name(base_name):
+    # Capitalize first letter of each word, but preserve underscores after a number
+    parts = base_name.split("_")
+    result_parts = []
+    for i, part in enumerate(parts):
+        if part.isdigit():
+            result_parts.append(part)
+        elif i > 0 and parts[i - 1].isdigit():
+            result_parts.append(part)
+        else:
+            result_parts.append(part.capitalize())
+    return "_".join(result_parts)
 
-def write_json_pretty(path, obj):
-    Path(path).write_text(json.dumps(obj, indent=2, ensure_ascii=False))
-
-def add_case_to_item_json(item_json_path, case_when, case_model_path, fallback_model):
-    base_obj = safe_load_json(item_json_path)
-    if base_obj and isinstance(base_obj, dict):
-        try:
-            model_block = base_obj.setdefault("model", {})
-            model_block.setdefault("type", "minecraft:select")
-            model_block.setdefault("property", "minecraft:component")
-            model_block.setdefault("component", "minecraft:custom_name")
-            cases = model_block.setdefault("cases", [])
-            if any(c.get("when") == case_when for c in cases):
-                log(f"Case '{case_when}' already exists in {item_json_path}; skipping append.")
-            else:
-                cases.append({
-                    "when": case_when,
-                    "model": {
-                        "type": "minecraft:model",
-                        "model": case_model_path
-                    }
-                })
-            model_block.setdefault("fallback", {
-                "type": "minecraft:model",
-                "model": fallback_model,
-                "tints": []
-            })
-            write_json_pretty(item_json_path, base_obj)
-            return
-        except Exception as e:
-            log(f"Warning: couldn't merge into existing {item_json_path}: {e}")
-    new_obj = {
-        "model": {
-            "type": "minecraft:select",
-            "property": "minecraft:component",
-            "component": "minecraft:custom_name",
-            "cases": [
-                {
-                    "when": case_when,
-                    "model": {
-                        "type": "minecraft:model",
-                        "model": case_model_path
-                    }
+def merge_item_json(json_path, case_entry, fallback_model):
+    if os.path.exists(json_path):
+        with open(json_path, "r", encoding="utf-8") as f:
+            item_json = json.load(f)
+    else:
+        item_json = {
+            "model": {
+                "type": "minecraft:select",
+                "property": "minecraft:component",
+                "component": "minecraft:custom_name",
+                "cases": [],
+                "fallback": {
+                    "type": "minecraft:model",
+                    "model": fallback_model,
+                    "tints": []
                 }
-            ],
-            "fallback": {
-                "type": "minecraft:model",
-                "model": fallback_model,
-                "tints": []
             }
         }
-    }
-    write_json_pretty(item_json_path, new_obj)
+
+    existing_cases = item_json["model"]["cases"]
+    existing_names = [c["when"] for c in existing_cases]
+    if case_entry["when"] not in existing_names:
+        existing_cases.append(case_entry)
+
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump(item_json, f, indent=2)
+
+def process_cit_file(file_path, dest_items_path, dest_generated_item_models, generated_folder_name):
+    if file_path.endswith(".properties"):
+        prop_data = parse_properties(file_path)
+        match_item = prop_data.get("matchItems", "").replace("minecraft:", "").split()[0]
+        model_ref = prop_data.get("model", "")
+        base_name = os.path.splitext(os.path.basename(file_path))[0]
+        transformed_name = transform_name(base_name)
+        json_output_path = os.path.join(dest_items_path, f"{match_item}.json")
+        case_entry = {
+            "when": transformed_name,
+            "model": {
+                "type": "minecraft:model",
+                "model": f"{generated_folder_name}:item/{os.path.splitext(model_ref)[0]}"
+            }
+        }
+        fallback_model = f"minecraft:item/{match_item}"
+        merge_item_json(json_output_path, case_entry, fallback_model)
+    elif file_path.endswith(".png"):
+        shutil.copy2(file_path, os.path.join(dest_generated_item_models, "textures", "item", os.path.basename(file_path)))
+    elif file_path.endswith(".json"):
+        shutil.copy2(file_path, os.path.join(dest_generated_item_models, "models", "item", os.path.basename(file_path)))
+
+def process_pack(input_path, generated_folder_name):
+    # Determine output folder
+    base_name = os.path.basename(os.path.splitext(input_path)[0])
+    output_name = f"Patched {base_name}"
+    temp_dir = None
+
+    # Handle zip input: extract to temp folder
+    if zipfile.is_zipfile(input_path):
+        temp_dir = tempfile.mkdtemp(prefix="cit_unpack_")
+        with zipfile.ZipFile(input_path, "r") as zip_ref:
+            zip_ref.extractall(temp_dir)
+        src_root = temp_dir
+    else:
+        src_root = input_path
+
+    # Prepare output directories
+    dest_root = os.path.join(os.path.dirname(input_path), output_name)
+    assets_minecraft_path = os.path.join(dest_root, "assets", "minecraft")
+    dest_items_path = os.path.join(assets_minecraft_path, "items")
+    dest_generated_item_models = os.path.join(dest_root, "assets", generated_folder_name)
+
+    ensure_dir(os.path.join(dest_generated_item_models, "models", "item"))
+    ensure_dir(os.path.join(dest_generated_item_models, "textures", "item"))
+    ensure_dir(dest_items_path)
+
+    # Copy root-level non-assets files
+    copy_root_files(src_root, dest_root)
+
+    # Walk through CIT folder
+    cit_path = os.path.join(src_root, "assets", "minecraft", "optifine", "cit")
+    if not os.path.exists(cit_path):
+        print(f"Warning: No CIT folder found at {cit_path}")
+        return
+
+    for root, _, files in os.walk(cit_path):
+        for file in files:
+            file_path = os.path.join(root, file)
+            process_cit_file(file_path, dest_items_path, dest_generated_item_models, generated_folder_name)
+
+    # If input was a zip, repack and clean up
+    if temp_dir:
+        output_zip_path = f"{dest_root}.zip"
+        with zipfile.ZipFile(output_zip_path, "w", zipfile.ZIP_DEFLATED) as zipf:
+            for root, _, files in os.walk(dest_root):
+                for file in files:
+                    abs_path = os.path.join(root, file)
+                    rel_path = os.path.relpath(abs_path, dest_root)
+                    zipf.write(abs_path, rel_path)
+        shutil.rmtree(temp_dir)
+        shutil.rmtree(dest_root)
+        print(f"Patched pack created: {output_zip_path}")
+    else:
+        print(f"Patched pack created: {dest_root}")
+
+def main():
+    config = load_config()
+    generated_folder_name = config["DEFAULT"].get("generated_folder_name", "generated-resources")
+
+    input_path = input("Enter path to resource pack (.zip or folder): ").strip().strip('"')
+    if not os.path.exists(input_path):
+        print("Invalid path.")
+        return
+
+    process_pack(input_path, generated_folder_name)
 
 if __name__ == "__main__":
-    script_dir = Path(__file__).parent
-    config = load_config(script_dir)
-
-    if len(sys.argv) < 2:
-        print("Usage: python cit_patcher.py /path/to/original_pack")
-        sys.exit(1)
-
-    original_pack_path = Path(sys.argv[1]).resolve()
-    if not original_pack_path.exists() or not original_pack_path.is_dir():
-        print(f"Original pack path not found or not a directory: {original_pack_path}")
-        sys.exit(1)
-
-    generated_name = config.get("generated_name_default", "generated-resources")
-    if config.get("prompt_for_generated_name", True):
-        ans = input(f"Enter name for the generated resources folder (default: {generated_name}): ").strip()
-        if ans:
-            generated_name = ans
-
-    patched_prefix = config.get("patched_prefix", "Patched ")
-    patched_pack_name = f"{patched_prefix}{original_pack_path.name}"
-    patched_pack_path = original_pack_path.parent / patched_pack_name
-
-    log(f"Original pack: {original_pack_path}")
-    log(f"Patched pack:  {patched_pack_path}")
-    log(f"Generated resources folder: {generated_name}")
-
-    ensure_dir(patched_pack_path)
-
-    for item in original_pack_path.iterdir():
-        if item.name.lower() == "assets":
-            continue
-        dest = patched_pack_path / item.name
-        if item.is_dir():
-            if dest.exists():
-                log(f"Skipping existing directory {dest}")
-            else:
-                try:
-                    shutil.copytree(item, dest)
-                    log(f"Copied directory {item.name} -> {dest}")
-                except Exception as e:
-                    log(f"Could not copy directory {item}: {e}")
-        else:
-            if dest.exists():
-                log(f"Skipping existing file {dest}")
-            else:
-                shutil.copy2(item, dest)
-                log(f"Copied file {item.name} -> {dest}")
-
-    assets_dir = patched_pack_path / "assets"
-    ensure_dir(assets_dir)
-    items_dir = assets_dir / "minecraft" / "items"
-    ensure_dir(items_dir)
-    generated_models_item_dir = assets_dir / generated_name / "models" / "item"
-    generated_textures_item_dir = assets_dir / generated_name / "textures" / "item"
-    ensure_dir(generated_models_item_dir)
-    ensure_dir(generated_textures_item_dir)
-
-    source_cit_dir = original_pack_path / "assets" / "minecraft" / "optifine" / "cit"
-    if not source_cit_dir.exists():
-        log(f"No CIT folder found at {source_cit_dir}.")
-        sys.exit(0)
-
-    for root, dirs, files in os.walk(source_cit_dir):
-        root_path = Path(root)
-        for fname in files:
-            src_path = root_path / fname
-            lower = fname.lower()
-            if lower.endswith('.png'):
-                dest = generated_textures_item_dir / fname
-                if dest.exists():
-                    log(f"Skipping existing texture {dest.name}")
-                else:
-                    shutil.copy2(src_path, dest)
-                    log(f"Copied PNG: {src_path} -> {dest}")
-            elif lower.endswith('.json'):
-                dest = generated_models_item_dir / fname
-                if dest.exists():
-                    log(f"Skipping existing model json {dest.name}")
-                else:
-                    shutil.copy2(src_path, dest)
-                    log(f"Copied JSON model: {src_path} -> {dest}")
-            elif lower.endswith('.properties'):
-                props = parse_properties_file(src_path)
-                model_field = props.get("model") or props.get("Model") or props.get("model-file")
-                if not model_field:
-                    log(f"No 'model' entry found in {src_path}; skipping.")
-                    continue
-                model_name = Path(model_field).stem
-                prop_stem = Path(src_path).stem
-                case_when = properties_when_name_from_filename(prop_stem)
-
-                match_items_value = props.get("matchItems") or props.get("match_items") or props.get("matchitems")
-                if not match_items_value:
-                    log(f"No 'matchItems' in {src_path}; skipping.")
-                    continue
-
-                tokens = re.split(r'\s+', match_items_value.strip())
-                for tok in tokens:
-                    if not tok:
-                        continue
-                    if ':' in tok:
-                        namespace, item_name = tok.split(':', 1)
-                    else:
-                        namespace, item_name = 'minecraft', tok
-                    item_json_filename = f"{item_name}.json"
-                    item_json_path = items_dir / item_json_filename
-                    case_model_path = f"{generated_name}:item/{model_name}"
-                    fallback_model = f"{namespace}:item/{item_name}"
-                    add_case_to_item_json(item_json_path, case_when, case_model_path, fallback_model)
-                    log(f"Updated item JSON for {item_name} with case '{case_when}' -> model {case_model_path}")
-            else:
-                log(f"Ignored file type: {src_path}")
-
-    log("Done. Patched pack created/updated at: " + str(patched_pack_path))
+    main()
