@@ -1,28 +1,64 @@
+#!/usr/bin/env python3
+"""
+cit_patcher.py - updated
+
+- Produces case "when" values like "Crafting Table_0"
+- Rewrites model JSON texture targets that are relative/bare into
+  "<generated_folder_name>:item/<texture_name>"
+- Supports zip input, loads block list from minecraft_blocks.txt,
+  and preserves previous functionality (merge cases, etc.)
+"""
+
 import os
+import sys
 import json
 import shutil
 import tempfile
 import zipfile
 import configparser
+from pathlib import Path
+import re
+
+# ---------------------------
+# Config & helpers
+# ---------------------------
 
 def load_config():
-    config = configparser.ConfigParser()
-    config.read('config.ini')
-    return config
+    cfg = configparser.ConfigParser()
+    cfg.read('config.ini')
+    # provide sensible defaults if file or keys missing
+    if 'DEFAULT' not in cfg:
+        cfg['DEFAULT'] = {}
+    return cfg
 
 def ensure_dir(path):
     os.makedirs(path, exist_ok=True)
 
 def copy_root_files(src_root, dest_root):
     for item in os.listdir(src_root):
+        if item.lower() == "assets":
+            continue
         src_item = os.path.join(src_root, item)
         dest_item = os.path.join(dest_root, item)
-        if os.path.isfile(src_item) and item != "assets":
-            shutil.copy2(src_item, dest_item)
+        if os.path.isdir(src_item):
+            if os.path.exists(dest_item):
+                log(f"Skipping existing directory {dest_item}")
+            else:
+                try:
+                    shutil.copytree(src_item, dest_item)
+                    log(f"Copied directory {item} -> {dest_item}")
+                except Exception as e:
+                    log(f"Failed copying directory {item}: {e}")
+        else:
+            if os.path.exists(dest_item):
+                log(f"Skipping existing file {dest_item}")
+            else:
+                shutil.copy2(src_item, dest_item)
+                log(f"Copied file {item} -> {dest_item}")
 
 def parse_properties(file_path):
     data = {}
-    with open(file_path, "r", encoding="utf-8") as f:
+    with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
         for line in f:
             line = line.strip()
             if not line or line.startswith("#") or "=" not in line:
@@ -31,144 +67,335 @@ def parse_properties(file_path):
             data[key.strip()] = value.strip()
     return data
 
-def transform_name(base_name):
-    parts = base_name.split("_")
-    result_parts = []
-    for i, part in enumerate(parts):
-        if part.isdigit():
-            result_parts.append(part)
-        elif i > 0 and parts[i - 1].isdigit():
-            result_parts.append(part)
-        else:
-            result_parts.append(part.capitalize())
-    return "_".join(result_parts)
+# Transform filename -> case "when" value (vanilla-like, spaces, capitalize)
+def transform_name_to_vanilla(filename_no_ext):
+    """
+    Rules:
+    - Split on underscores.
+    - Capitalize each head word and join with spaces.
+    - Detect first segment that contains a digit; everything from that segment
+      onward (including underscores) is preserved exactly and appended to the head
+      separated by a single underscore.
+    Examples:
+      crafting_table_0 -> "Crafting Table_0"
+      apple_0 -> "Apple_0"
+      birch_leaves_0_wall -> "Birch Leaves_0_wall"
+      dark_oak -> "Dark Oak"
+    """
+    parts = filename_no_ext.split('_')
+    idx = None
+    for i, p in enumerate(parts):
+        if any(ch.isdigit() for ch in p):
+            idx = i
+            break
+    if idx is None:
+        # No numeric segment: capitalize and join with spaces
+        head = ' '.join(p.capitalize() for p in parts if p != '')
+        return head
+    else:
+        head_parts = parts[:idx]
+        tail_parts = parts[idx:]
+        head = ' '.join(p.capitalize() for p in head_parts if p != '')
+        tail = '_'.join(tail_parts)
+        return f"{head}_{tail}" if head else tail
 
 def load_block_names():
     block_file = "minecraft_blocks.txt"
-    block_names = set()
+    names = set()
     if os.path.exists(block_file):
         with open(block_file, "r", encoding="utf-8") as f:
             for line in f:
-                name = line.strip()
-                if name and not name.startswith("#"):
-                    block_names.add(name)
-        print(f"Loaded {len(block_names)} block names from {block_file}.")
+                n = line.strip()
+                if n and not n.startswith("#"):
+                    names.add(n)
+        log(f"Loaded {len(names)} block names from {block_file}")
     else:
-        print(f"Warning: {block_file} not found. Defaulting to item models only.")
-    return block_names
+        log(f"Warning: {block_file} not found; defaulting to items-only fallback")
+    return names
 
-def merge_item_json(json_path, case_entry, fallback_model):
-    if os.path.exists(json_path):
-        with open(json_path, "r", encoding="utf-8") as f:
-            item_json = json.load(f)
-    else:
-        item_json = {
-            "model": {
-                "type": "minecraft:select",
-                "property": "minecraft:component",
-                "component": "minecraft:custom_name",
-                "cases": [],
-                "fallback": {
-                    "type": "minecraft:model",
-                    "model": fallback_model,
-                    "tints": []
-                }
-            }
-        }
+def safe_load_json(path):
+    try:
+        return json.loads(Path(path).read_text(encoding='utf-8'))
+    except Exception:
+        return None
 
-    existing_cases = item_json["model"]["cases"]
-    existing_names = [c["when"] for c in existing_cases]
-    if case_entry["when"] not in existing_names:
-        existing_cases.append(case_entry)
+def write_json_pretty(path, obj):
+    Path(path).write_text(json.dumps(obj, indent=2, ensure_ascii=False), encoding='utf-8')
 
-    with open(json_path, "w", encoding="utf-8") as f:
-        json.dump(item_json, f, indent=2)
+def log(msg):
+    # prints only if verbose is enabled in config (set by main)
+    if GLOBAL_CONFIG.get("verbose", True):
+        print(msg)
 
-def process_cit_file(file_path, dest_items_path, dest_generated_item_models, generated_folder_name, block_names):
-    if file_path.endswith(".properties"):
-        prop_data = parse_properties(file_path)
-        match_item = prop_data.get("matchItems", "").replace("minecraft:", "").split()[0]
-        model_ref = prop_data.get("model", "")
-        base_name = os.path.splitext(os.path.basename(file_path))[0]
-        transformed_name = transform_name(base_name)
+# ---------------------------
+# Item JSON merging (selector)
+# ---------------------------
 
-        # Determine if fallback is block or item
-        if match_item in block_names:
-            fallback_model = f"minecraft:block/{match_item}"
-        else:
-            fallback_model = f"minecraft:item/{match_item}"
-
-        json_output_path = os.path.join(dest_items_path, f"{match_item}.json")
-        case_entry = {
-            "when": transformed_name,
-            "model": {
+def merge_item_json(item_json_path, case_when, case_model_path, fallback_model):
+    existing = safe_load_json(item_json_path)
+    if existing and isinstance(existing, dict):
+        try:
+            model_block = existing.setdefault("model", {})
+            model_block.setdefault("type", "minecraft:select")
+            model_block.setdefault("property", "minecraft:component")
+            model_block.setdefault("component", "minecraft:custom_name")
+            cases = model_block.setdefault("cases", [])
+            if any(c.get("when") == case_when for c in cases):
+                log(f"Case '{case_when}' already present in {item_json_path}; skipping append")
+            else:
+                cases.append({
+                    "when": case_when,
+                    "model": {
+                        "type": "minecraft:model",
+                        "model": case_model_path
+                    }
+                })
+            model_block.setdefault("fallback", {
                 "type": "minecraft:model",
-                "model": f"{generated_folder_name}:item/{os.path.splitext(model_ref)[0]}"
+                "model": fallback_model,
+                "tints": []
+            })
+            write_json_pretty(item_json_path, existing)
+            return
+        except Exception as e:
+            log(f"Could not merge into existing {item_json_path}: {e}")
+
+    # create new structure if we couldn't merge
+    new_obj = {
+        "model": {
+            "type": "minecraft:select",
+            "property": "minecraft:component",
+            "component": "minecraft:custom_name",
+            "cases": [
+                {
+                    "when": case_when,
+                    "model": {
+                        "type": "minecraft:model",
+                        "model": case_model_path
+                    }
+                }
+            ],
+            "fallback": {
+                "type": "minecraft:model",
+                "model": fallback_model,
+                "tints": []
             }
         }
-        merge_item_json(json_output_path, case_entry, fallback_model)
+    }
+    write_json_pretty(item_json_path, new_obj)
 
-    elif file_path.endswith(".png"):
-        shutil.copy2(file_path, os.path.join(dest_generated_item_models, "textures", "item", os.path.basename(file_path)))
-    elif file_path.endswith(".json"):
-        shutil.copy2(file_path, os.path.join(dest_generated_item_models, "models", "item", os.path.basename(file_path)))
+# ---------------------------
+# Model JSON texture rewriting
+# ---------------------------
+
+def rewrite_model_textures_and_write(src_json_path, dest_json_path, generated_folder_name):
+    try:
+        data = json.loads(Path(src_json_path).read_text(encoding='utf-8'))
+    except Exception as e:
+        log(f"Couldn't parse JSON {src_json_path}: {e}. Copying raw file.")
+        shutil.copy2(src_json_path, dest_json_path)
+        return
+
+    # --- Resolve parent display transforms ---
+    data = resolve_model_parents(data, Path(src_json_path).parent)
+
+    # --- Rewrite textures ---
+    if isinstance(data, dict) and "textures" in data and isinstance(data["textures"], dict):
+        textures = data["textures"]
+        for key, val in list(textures.items()):
+            if not isinstance(val, str):
+                continue
+            v = val.strip()
+            if v.startswith("./") or v.startswith(".\\"):
+                base = v[2:]
+            else:
+                base = v
+            if ":" in base or "/" in base:
+                continue
+            if re.search(r"[A-Za-z_]", base):
+                new_val = f"{generated_folder_name}:item/{base}"
+                textures[key] = new_val
+                log(f"Rewrote texture '{val}' -> '{new_val}' in {src_json_path}")
+
+    write_json_pretty(dest_json_path, data)
+
+def resolve_model_parents(data, src_folder):
+    """
+    Recursively resolves './parent' models in the same folder and merges 'display'.
+    Only merges 'display' blocks, leaves other parts intact.
+    """
+    if not isinstance(data, dict):
+        return data
+
+    parent_path = data.get("parent")
+    if parent_path and parent_path.startswith("./"):
+        parent_file = Path(src_folder) / (Path(parent_path).stem + ".json")
+        if parent_file.exists():
+            try:
+                parent_data = json.loads(parent_file.read_text(encoding='utf-8'))
+                # Recursively resolve parent of parent
+                parent_data = resolve_model_parents(parent_data, src_folder)
+                # Merge display if missing in child
+                if "display" in parent_data and "display" not in data:
+                    data["display"] = parent_data["display"]
+            except Exception as e:
+                log(f"Error resolving parent {parent_path}: {e}")
+        else:
+            log(f"Parent {parent_file} not found")
+        # Remove parent reference to avoid invalid ./ references
+        data.pop("parent", None)
+    return data
+
+# ---------------------------
+# CIT processing
+# ---------------------------
+
+def process_cit_file(src_path, dest_items_path, generated_asset_root, generated_folder_name, block_names):
+    src_path = Path(src_path)
+    lower = src_path.suffix.lower()
+    if lower == ".properties":
+        props = parse_properties(str(src_path))
+        # matchItems can be missing variants - check multiple keys
+        match_items_value = props.get("matchItems") or props.get("match_items") or props.get("matchitems")
+        if not match_items_value:
+            log(f"No matchItems in {src_path}; skipping")
+            return
+        # process each token
+        tokens = re.split(r'\s+', match_items_value.strip())
+        # model field
+        model_field = props.get("model") or props.get("Model") or props.get("model-file")
+        if not model_field:
+            log(f"No model= in {src_path}; skipping")
+            return
+        model_name = Path(model_field).stem  # e.g., apple_0
+        prop_stem = src_path.stem
+        case_when = transform_name_to_vanilla(prop_stem)
+        for tok in tokens:
+            if not tok:
+                continue
+            if ':' in tok:
+                ns, item_name = tok.split(':', 1)
+            else:
+                ns, item_name = 'minecraft', tok
+            # decide fallback block/item via block_names set
+            if item_name in block_names:
+                fallback = f"minecraft:block/{item_name}"
+            else:
+                fallback = f"minecraft:item/{item_name}"
+            item_json_path = os.path.join(dest_items_path, f"{item_name}.json")
+            case_model_path = f"{generated_folder_name}:item/{model_name}"
+            merge_item_json(item_json_path, case_when, case_model_path, fallback)
+            log(f"Added/updated case '{case_when}' -> {case_model_path} to {item_json_path}")
+
+    elif lower == ".png":
+        dest = os.path.join(generated_asset_root, "textures", "item", src_path.name)
+        if os.path.exists(dest):
+            log(f"Skipping existing texture {dest}")
+        else:
+            shutil.copy2(str(src_path), dest)
+            log(f"Copied PNG {src_path} -> {dest}")
+
+    elif lower == ".json":
+        # when copying model JSONs, rewrite textures if necessary
+        dest = os.path.join(generated_asset_root, "models", "item", src_path.name)
+        if os.path.exists(dest):
+            log(f"Skipping existing model {dest}")
+        else:
+            rewrite_model_textures_and_write(str(src_path), dest, generated_folder_name)
+            log(f"Copied/rewrote model JSON {src_path} -> {dest}")
+    else:
+        log(f"Ignored CIT file type: {src_path}")
+
+# ---------------------------
+# Main pack processing (zip or folder)
+# ---------------------------
 
 def process_pack(input_path, generated_folder_name, block_names):
-    base_name = os.path.basename(os.path.splitext(input_path)[0])
+    input_path = Path(input_path)
+    base_name = input_path.stem
     output_name = f"Patched {base_name}"
     temp_dir = None
 
+    # If zip: extract to temp folder
     if zipfile.is_zipfile(input_path):
         temp_dir = tempfile.mkdtemp(prefix="cit_unpack_")
-        with zipfile.ZipFile(input_path, "r") as zip_ref:
-            zip_ref.extractall(temp_dir)
-        src_root = temp_dir
+        with zipfile.ZipFile(input_path, "r") as z:
+            z.extractall(temp_dir)
+        src_root = Path(temp_dir)
     else:
         src_root = input_path
 
-    dest_root = os.path.join(os.path.dirname(input_path), output_name)
-    assets_minecraft_path = os.path.join(dest_root, "assets", "minecraft")
-    dest_items_path = os.path.join(assets_minecraft_path, "items")
-    dest_generated_item_models = os.path.join(dest_root, "assets", generated_folder_name)
+    dest_root = input_path.parent / output_name
+    assets_dir = dest_root / "assets"
+    items_dir = assets_dir / "minecraft" / "items"
+    generated_asset_root = assets_dir / generated_folder_name
 
-    ensure_dir(os.path.join(dest_generated_item_models, "models", "item"))
-    ensure_dir(os.path.join(dest_generated_item_models, "textures", "item"))
-    ensure_dir(dest_items_path)
+    ensure_dir(items_dir)
+    ensure_dir(generated_asset_root / "models" / "item")
+    ensure_dir(generated_asset_root / "textures" / "item")
 
-    copy_root_files(src_root, dest_root)
+    # Copy root-level non-assets files/dirs
+    copy_root_files(str(src_root), str(dest_root))
 
-    cit_path = os.path.join(src_root, "assets", "minecraft", "optifine", "cit")
-    if not os.path.exists(cit_path):
-        print(f"Warning: No CIT folder found at {cit_path}")
+    # Walk CIT source
+    cit_dir = src_root / "assets" / "minecraft" / "optifine" / "cit"
+    if not cit_dir.exists():
+        log(f"No CIT folder found at {cit_dir}; nothing to do.")
+        # cleanup if zip input
+        if temp_dir:
+            shutil.rmtree(temp_dir)
         return
 
-    for root, _, files in os.walk(cit_path):
-        for file in files:
-            file_path = os.path.join(root, file)
-            process_cit_file(file_path, dest_items_path, dest_generated_item_models, generated_folder_name, block_names)
+    for root, _, files in os.walk(str(cit_dir)):
+        for f in files:
+            src = Path(root) / f
+            process_cit_file(str(src), str(items_dir), str(generated_asset_root), generated_folder_name, block_names)
 
+    # If input was zip: pack back to zip and cleanup extracted folder and temporary dest folder
     if temp_dir:
-        output_zip_path = f"{dest_root}.zip"
-        with zipfile.ZipFile(output_zip_path, "w", zipfile.ZIP_DEFLATED) as zipf:
-            for root, _, files in os.walk(dest_root):
-                for file in files:
-                    abs_path = os.path.join(root, file)
-                    rel_path = os.path.relpath(abs_path, dest_root)
-                    zipf.write(abs_path, rel_path)
+        output_zip = str(dest_root) + ".zip"
+        with zipfile.ZipFile(output_zip, "w", zipfile.ZIP_DEFLATED) as z:
+            for root, _, files in os.walk(str(dest_root)):
+                for f in files:
+                    absf = os.path.join(root, f)
+                    relf = os.path.relpath(absf, str(dest_root))
+                    z.write(absf, relf)
+        # cleanup
         shutil.rmtree(temp_dir)
-        shutil.rmtree(dest_root)
-        print(f"Patched pack created: {output_zip_path}")
+        shutil.rmtree(str(dest_root))
+        log(f"Created patched zip: {output_zip}")
+        print(f"Patched pack created: {output_zip}")
     else:
+        log(f"Created patched folder: {dest_root}")
         print(f"Patched pack created: {dest_root}")
 
+# ---------------------------
+# Entry point
+# ---------------------------
+
+GLOBAL_CONFIG = {"verbose": True}
+
 def main():
-    config = load_config()
-    generated_folder_name = config["DEFAULT"].get("generated_folder_name", "generated-resources")
+    global GLOBAL_CONFIG
+    cfg = load_config()
+    DEFAULT = cfg['DEFAULT']
+    generated_folder_name = DEFAULT.get("generated_folder_name", "generated-resources")
+    verbose = DEFAULT.get("verbose", "true").lower() in ("1", "true", "yes")
+    GLOBAL_CONFIG["verbose"] = verbose
+
     block_names = load_block_names()
 
-    input_path = input("Enter path to resource pack (.zip or folder): ").strip().strip('"')
+    # Accept argument path or prompt
+    if len(sys.argv) >= 2:
+        input_path = sys.argv[1]
+    else:
+        input_path = input("Enter path to resource pack (.zip or folder): ").strip().strip('"')
+
+    if not input_path:
+        print("No path provided. Exiting.")
+        return
     if not os.path.exists(input_path):
-        print("Invalid path.")
+        print("Path does not exist:", input_path)
         return
 
     process_pack(input_path, generated_folder_name, block_names)
