@@ -219,32 +219,92 @@ def rewrite_model_textures_and_write(src_json_path, dest_json_path, generated_fo
 
     write_json_pretty(dest_json_path, data)
 
-def resolve_model_parents(data, src_folder):
+def resolve_texture_references(textures):
     """
-    Recursively resolves './parent' models in the same folder and merges 'display'.
-    Only merges 'display' blocks, leaves other parts intact.
+    Resolves texture key references like "#trapdoor" -> the actual texture path.
+    Repeats until all references are expanded or no further resolution is possible.
+    """
+    resolved = dict(textures)
+    changed = True
+    while changed:
+        changed = False
+        for key, val in list(resolved.items()):
+            if isinstance(val, str) and val.startswith("#"):
+                ref_key = val[1:]
+                if ref_key in resolved and resolved[ref_key] != val:
+                    resolved[key] = resolved[ref_key]
+                    changed = True
+    return resolved
+
+def resolve_model_parents(data, src_folder, visited=None):
+    """
+    Recursively resolves './parent' models in the same folder and merges *all* relevant fields.
+    Child values always override parent values.
     """
     if not isinstance(data, dict):
         return data
 
+    if visited is None:
+        visited = set()
+
     parent_path = data.get("parent")
-    if parent_path and parent_path.startswith("./"):
-        parent_file = Path(src_folder) / (Path(parent_path).stem + ".json")
-        if parent_file.exists():
-            try:
-                parent_data = json.loads(parent_file.read_text(encoding='utf-8'))
-                # Recursively resolve parent of parent
-                parent_data = resolve_model_parents(parent_data, src_folder)
-                # Merge display if missing in child
-                if "display" in parent_data and "display" not in data:
-                    data["display"] = parent_data["display"]
-            except Exception as e:
-                log(f"Error resolving parent {parent_path}: {e}")
-        else:
-            log(f"Parent {parent_file} not found")
-        # Remove parent reference to avoid invalid ./ references
+    if not parent_path or not parent_path.startswith("./"):
+        return data
+
+    parent_file = Path(src_folder) / (Path(parent_path).stem + ".json")
+
+    # Prevent infinite loops
+    if parent_file in visited:
+        log(f"Cycle detected for {parent_file}, skipping")
+        return data
+    visited.add(parent_file)
+
+    if not parent_file.exists():
+        log(f"Parent {parent_file} not found")
         data.pop("parent", None)
-    return data
+        return data
+
+    try:
+        parent_data = json.loads(parent_file.read_text(encoding='utf-8'))
+        parent_data = resolve_model_parents(parent_data, src_folder, visited)
+
+        # --- Merge all relevant fields ---
+        merged = dict(parent_data)  # start from parent copy
+        merged.update({k: v for k, v in data.items() if k not in ("textures", "elements", "display")})
+
+        # Merge textures (child overrides individual keys)
+        if "textures" in parent_data or "textures" in data:
+            merged["textures"] = dict(parent_data.get("textures", {}))
+            merged["textures"].update(data.get("textures", {}))
+
+        # Merge elements (child replaces entirely if present)
+        if "elements" in data:
+            merged["elements"] = data["elements"]
+        elif "elements" in parent_data:
+            merged["elements"] = parent_data["elements"]
+
+        # Merge display (child replaces or extends)
+        if "display" in parent_data or "display" in data:
+            merged["display"] = dict(parent_data.get("display", {}))
+            merged["display"].update(data.get("display", {}))
+
+        # Ambient occlusion, etc.
+        if "ambientocclusion" not in merged and "ambientocclusion" in parent_data:
+            merged["ambientocclusion"] = parent_data["ambientocclusion"]
+
+        # Remove parent to avoid unresolved reference
+        merged.pop("parent", None)
+
+        # Resolve #texture references after merging
+        if "textures" in merged:
+            merged["textures"] = resolve_texture_references(merged["textures"])
+
+        return merged
+
+    except Exception as e:
+        log(f"Error resolving parent {parent_path}: {e}")
+        data.pop("parent", None)
+        return data
 
 # ---------------------------
 # CIT processing
@@ -253,9 +313,9 @@ def resolve_model_parents(data, src_folder):
 # Correct fallbacks for special items/blocks
 FALLBACK_OVERRIDES = {
     "cake": "minecraft:item/cake",
-    "chest": "minecraft:item/chest",
-    "clock": "minecraft:item/clock_00",
-    "shield": "minecraft:item/shield",
+    "chest": "minecraft:item/chest_minecraft",
+    "clock": "minecraft:item/clock",
+    "shield": "minecraft:block/shield",
 }
 
 # Add all fence variants
@@ -267,16 +327,16 @@ for wood in ["oak", "spruce", "birch", "jungle", "acacia", "dark_oak", "mangrove
 # Add colored beds and banners
 COLORS = ["white", "orange", "magenta", "light_blue", "yellow", "lime", "pink", "gray", "light_gray", "cyan", "purple", "blue", "brown", "green", "red", "black"]
 for color in COLORS:
-    FALLBACK_OVERRIDES[f"{color}_bed"] = f"minecraft:item/{color}_bed"
-    FALLBACK_OVERRIDES[f"{color}_banner"] = f"minecraft:item/{color}_banner"
+    FALLBACK_OVERRIDES[f"{color}_bed"] = f"minecraft:block/{color}_bed"
+    FALLBACK_OVERRIDES[f"{color}_banner"] = f"minecraft:block/{color}_banner"
 
 # Special banners
-FALLBACK_OVERRIDES["ominous_banner"] = "minecraft:item/ominous_banner"
+FALLBACK_OVERRIDES["ominous_banner"] = "minecraft:block/ominous_banner"
 
 # Mob heads
 for mob in ["skeleton", "wither_skeleton", "zombie", "creeper", "player", "dragon", "piglin"]:
-    FALLBACK_OVERRIDES[f"{mob}_head"] = f"minecraft:item/{mob}_head"
-    FALLBACK_OVERRIDES[f"{mob}_skull"] = f"minecraft:item/{mob}_skull"
+    FALLBACK_OVERRIDES[f"{mob}_head"] = f"minecraft:block/{mob}_head"
+    FALLBACK_OVERRIDES[f"{mob}_skull"] = f"minecraft:block/{mob}_skull"
 
 def process_cit_file(src_path, dest_items_path, generated_asset_root, generated_folder_name, block_names):
     src_path = Path(src_path)
