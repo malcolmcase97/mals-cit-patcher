@@ -250,6 +250,34 @@ def resolve_model_parents(data, src_folder):
 # CIT processing
 # ---------------------------
 
+# Correct fallbacks for special items/blocks
+FALLBACK_OVERRIDES = {
+    "cake": "minecraft:item/cake",
+    "chest": "minecraft:item/chest",
+    "clock": "minecraft:item/clock_00",
+    "shield": "minecraft:item/shield",
+}
+
+# Add all fence variants
+for wood in ["oak", "spruce", "birch", "jungle", "acacia", "dark_oak", "mangrove", "cherry", "bamboo", "crimson", "warped", "nether_brick", "pale_oak"]:
+    FALLBACK_OVERRIDES[f"{wood}_fence"] = f"minecraft:block/{wood}_fence_inventory"
+    FALLBACK_OVERRIDES[f"{wood}_trapdoor"] = f"minecraft:block/{wood}_trapdoor_bottom"
+    FALLBACK_OVERRIDES[f"{wood}_sign"] = f"minecraft:item/{wood}_sign"
+
+# Add colored beds and banners
+COLORS = ["white", "orange", "magenta", "light_blue", "yellow", "lime", "pink", "gray", "light_gray", "cyan", "purple", "blue", "brown", "green", "red", "black"]
+for color in COLORS:
+    FALLBACK_OVERRIDES[f"{color}_bed"] = f"minecraft:item/{color}_bed"
+    FALLBACK_OVERRIDES[f"{color}_banner"] = f"minecraft:item/{color}_banner"
+
+# Special banners
+FALLBACK_OVERRIDES["ominous_banner"] = "minecraft:item/ominous_banner"
+
+# Mob heads
+for mob in ["skeleton", "wither_skeleton", "zombie", "creeper", "player", "dragon", "piglin"]:
+    FALLBACK_OVERRIDES[f"{mob}_head"] = f"minecraft:item/{mob}_head"
+    FALLBACK_OVERRIDES[f"{mob}_skull"] = f"minecraft:item/{mob}_skull"
+
 def process_cit_file(src_path, dest_items_path, generated_asset_root, generated_folder_name, block_names):
     src_path = Path(src_path)
     lower = src_path.suffix.lower()
@@ -278,7 +306,9 @@ def process_cit_file(src_path, dest_items_path, generated_asset_root, generated_
             else:
                 ns, item_name = 'minecraft', tok
             # decide fallback block/item via block_names set
-            if item_name in block_names:
+            if item_name in FALLBACK_OVERRIDES:
+                fallback = FALLBACK_OVERRIDES[item_name]
+            elif item_name in block_names:
                 fallback = f"minecraft:block/{item_name}"
             else:
                 fallback = f"minecraft:item/{item_name}"
