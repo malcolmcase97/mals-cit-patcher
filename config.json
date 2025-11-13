@@ -1,7 +1,0 @@
-{
-  "prompt_for_generated_name": true,
-  "generated_name_default": "generated-resources",
-  "patched_prefix": "Patched ",
-  "clean_mode": "B",
-  "verbose": true
-}

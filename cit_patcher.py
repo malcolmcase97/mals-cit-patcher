@@ -1,13 +1,4 @@
 #!/usr/bin/env python3
-"""
-cit_patcher.py - updated
-
-- Produces case "when" values like "Crafting Table_0"
-- Rewrites model JSON texture targets that are relative/bare into
-  "<generated_folder_name>:item/<texture_name>"
-- Supports zip input, loads block list from minecraft_blocks.txt,
-  and preserves previous functionality (merge cases, etc.)
-"""
 
 import os
 import sys
@@ -24,16 +15,34 @@ import re
 # ---------------------------
 
 def load_config():
+    """Load configuration from config.ini and return a dict of settings."""
     cfg = configparser.ConfigParser()
     cfg.read('config.ini')
-    # provide sensible defaults if file or keys missing
-    if 'DEFAULT' not in cfg:
-        cfg['DEFAULT'] = {}
-    return cfg
 
+    DEFAULT = cfg['DEFAULT'] if 'DEFAULT' in cfg else {}
+
+    # Load string options
+    generated_folder_name = DEFAULT.get("generated_folder_name", "generated-resources")
+    patched_prefix = DEFAULT.get("patched_prefix", "Patched ")
+    generated_name_default = DEFAULT.get("generated_name_default", "generated-resources")
+
+    # Load boolean options
+    verbose = DEFAULT.get("verbose", "true").lower() in ("1", "true", "yes")
+    prompt_for_generated_name = DEFAULT.get("prompt_for_generated_name", "true").lower() in ("1", "true", "yes")
+
+    return {
+        "generated_folder_name": generated_folder_name,
+        "patched_prefix": patched_prefix,
+        "generated_name_default": generated_name_default,
+        "verbose": verbose,
+        "prompt_for_generated_name": prompt_for_generated_name
+    }
+
+# Ensure directory exists
 def ensure_dir(path):
     os.makedirs(path, exist_ok=True)
 
+# Copy all root-level files and directories except "assets"
 def copy_root_files(src_root, dest_root):
     for item in os.listdir(src_root):
         if item.lower() == "assets":
@@ -56,6 +65,7 @@ def copy_root_files(src_root, dest_root):
                 shutil.copy2(src_item, dest_item)
                 log(f"Copied file {item} -> {dest_item}")
 
+# Simple .properties parser
 def parse_properties(file_path):
     data = {}
     with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
@@ -67,21 +77,8 @@ def parse_properties(file_path):
             data[key.strip()] = value.strip()
     return data
 
-# Transform filename -> case "when" value (vanilla-like, spaces, capitalize)
+# Transform filename -> case "when" value to reflect vanilla style
 def transform_name_to_vanilla(filename_no_ext):
-    """
-    Rules:
-    - Split on underscores.
-    - Capitalize each head word and join with spaces.
-    - Detect first segment that contains a digit; everything from that segment
-      onward (including underscores) is preserved exactly and appended to the head
-      separated by a single underscore.
-    Examples:
-      crafting_table_0 -> "Crafting Table_0"
-      apple_0 -> "Apple_0"
-      birch_leaves_0_wall -> "Birch Leaves_0_wall"
-      dark_oak -> "Dark Oak"
-    """
     parts = filename_no_ext.split('_')
     idx = None
     for i, p in enumerate(parts):
@@ -99,6 +96,7 @@ def transform_name_to_vanilla(filename_no_ext):
         tail = '_'.join(tail_parts)
         return f"{head}_{tail}" if head else tail
 
+# Load block names from minecraft_blocks.txt to check block vs item fallbacks
 def load_block_names():
     block_file = "minecraft_blocks.txt"
     names = set()
@@ -113,17 +111,19 @@ def load_block_names():
         log(f"Warning: {block_file} not found; defaulting to items-only fallback")
     return names
 
+# JSON helpers
 def safe_load_json(path):
     try:
         return json.loads(Path(path).read_text(encoding='utf-8'))
     except Exception:
         return None
 
+# Write JSON with pretty formatting
 def write_json_pretty(path, obj):
     Path(path).write_text(json.dumps(obj, indent=2, ensure_ascii=False), encoding='utf-8')
 
+# Prints only if verbose is enabled in config (set by main)
 def log(msg):
-    # prints only if verbose is enabled in config (set by main)
     if GLOBAL_CONFIG.get("verbose", True):
         print(msg)
 
@@ -131,6 +131,7 @@ def log(msg):
 # Item JSON merging (selector)
 # ---------------------------
 
+# Merge or create item JSON with select model for custom_name component
 def merge_item_json(item_json_path, case_when, case_model_path, fallback_model):
     existing = safe_load_json(item_json_path)
     if existing and isinstance(existing, dict):
@@ -198,6 +199,7 @@ def merge_item_json(item_json_path, case_when, case_model_path, fallback_model):
 # Model JSON texture rewriting
 # ---------------------------
 
+# Rewrite model JSON textures to use generated namespace
 def rewrite_model_textures_and_write(src_json_path, dest_json_path, generated_folder_name):
     try:
         data = json.loads(Path(src_json_path).read_text(encoding='utf-8'))
@@ -229,11 +231,8 @@ def rewrite_model_textures_and_write(src_json_path, dest_json_path, generated_fo
 
     write_json_pretty(dest_json_path, data)
 
+# Resolves texture key references like "#trapdoor" -> the actual texture path.
 def resolve_texture_references(textures):
-    """
-    Resolves texture key references like "#trapdoor" -> the actual texture path.
-    Repeats until all references are expanded or no further resolution is possible.
-    """
     resolved = dict(textures)
     changed = True
     while changed:
@@ -246,11 +245,8 @@ def resolve_texture_references(textures):
                     changed = True
     return resolved
 
+# Recursively resolve parent models and merge fields, child overrides parent.
 def resolve_model_parents(data, src_folder, visited=None):
-    """
-    Recursively resolves './parent' models in the same folder and merges *all* relevant fields.
-    Child values always override parent values.
-    """
     if not isinstance(data, dict):
         return data
 
@@ -322,16 +318,16 @@ def resolve_model_parents(data, src_folder, visited=None):
 
 # Correct fallbacks for special items/blocks
 FALLBACK_OVERRIDES = {
-    "cake": "minecraft:item/cake",  # standard item model
+    "cake": "minecraft:item/cake",  # standard item model (not block)
 
-    # Shields – requires special renderer
+    # Shields – special renderer
     "shield": {
         "type": "minecraft:special",
         "base": "minecraft:item/shield",
         "model": {"type": "minecraft:shield"}
     },
 
-    # Chests – block entity special model
+    # Chests use special block entity model
     "chest": {
         "type": "minecraft:special",
         "base": "minecraft:item/chest",
@@ -382,7 +378,7 @@ for color in COLORS:
         }
     }
 
-# Mob heads (special block entity renderers)
+# Mob heads use special block entity models
 for mob in ["zombie", "creeper", "player", "dragon", "piglin"]:
     FALLBACK_OVERRIDES[f"{mob}_head"] = {
         "type": "minecraft:special",
@@ -397,6 +393,7 @@ for mob in ["skeleton", "wither_skeleton"]:
     "model": {"type": "minecraft:head", "kind": mob}
 }
 
+# Clock special case: range dispatch based on time of day
 FALLBACK_OVERRIDES["clock"] = {
     "type": "select",
     "cases": [
@@ -431,6 +428,7 @@ FALLBACK_OVERRIDES["clock"] = {
     "property": "context_dimension"
 }
 
+# Process files based on type
 def process_cit_file(src_path, dest_items_path, generated_asset_root, generated_folder_name, block_names):
     src_path = Path(src_path)
     lower = src_path.suffix.lower()
@@ -503,6 +501,7 @@ def process_cit_file(src_path, dest_items_path, generated_asset_root, generated_
 # Main pack processing (zip or folder)
 # ---------------------------
 
+# Process a resource pack (zip or folder)
 def process_pack(input_path, generated_folder_name, block_names):
     input_path = Path(input_path)
     base_name = input_path.stem
@@ -566,15 +565,9 @@ def process_pack(input_path, generated_folder_name, block_names):
 # Entry point
 # ---------------------------
 
-GLOBAL_CONFIG = {"verbose": True}
-
 def main():
     global GLOBAL_CONFIG
-    cfg = load_config()
-    DEFAULT = cfg['DEFAULT']
-    generated_folder_name = DEFAULT.get("generated_folder_name", "generated-resources")
-    verbose = DEFAULT.get("verbose", "true").lower() in ("1", "true", "yes")
-    GLOBAL_CONFIG["verbose"] = verbose
+    GLOBAL_CONFIG = load_config()
 
     block_names = load_block_names()
 
@@ -590,6 +583,13 @@ def main():
     if not os.path.exists(input_path):
         print("Path does not exist:", input_path)
         return
+
+    # Prompt user for generated folder name if enabled
+    generated_folder_name = GLOBAL_CONFIG["generated_folder_name"]
+    if GLOBAL_CONFIG.get("prompt_for_generated_name", False):
+        user_input = input(f"Enter generated folder name [{generated_folder_name}]: ").strip()
+        if user_input:
+            generated_folder_name = user_input
 
     process_pack(input_path, generated_folder_name, block_names)
 
