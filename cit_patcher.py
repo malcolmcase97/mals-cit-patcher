@@ -417,7 +417,6 @@ def process_cit_file(src_path, dest_items_path, generated_asset_root, generated_
             return
         model_name = Path(model_field).stem  # e.g., apple_0
         prop_stem = src_path.stem
-        case_when = transform_name_to_vanilla(prop_stem)
         for tok in tokens:
             if not tok:
                 continue
@@ -425,6 +424,16 @@ def process_cit_file(src_path, dest_items_path, generated_asset_root, generated_
                 ns, item_name = tok.split(':', 1)
             else:
                 ns, item_name = 'minecraft', tok
+
+            # compute case_when now that we know the property stem AND the item_name
+            case_when = transform_name_to_vanilla(prop_stem)
+
+            # If this is a colored bed or banner, prepend the color name (e.g. "Brown Bed_0")
+            for color in COLORS:
+                if item_name == f"{color}_bed" or item_name == f"{color}_banner":
+                    case_when = f"{color.title()} {case_when}"
+                    break
+
             # decide fallback block/item via block_names set
             if item_name in FALLBACK_OVERRIDES:
                 fallback = FALLBACK_OVERRIDES[item_name]
@@ -432,6 +441,7 @@ def process_cit_file(src_path, dest_items_path, generated_asset_root, generated_
                 fallback = f"minecraft:block/{item_name}"
             else:
                 fallback = f"minecraft:item/{item_name}"
+
             item_json_path = os.path.join(dest_items_path, f"{item_name}.json")
             case_model_path = f"{generated_folder_name}:item/{model_name}"
             merge_item_json(item_json_path, case_when, case_model_path, fallback)
