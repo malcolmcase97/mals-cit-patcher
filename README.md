@@ -1,8 +1,11 @@
 # Mal's CIT Resource Pack Patcher
 
 A Python script to patch **Custom Item Textures (CIT)** in Minecraft resource packs for compatibility with Minecraft 1.21.5+.
+
 Should be used on CIT resource packs that require Optifine on older Minecraft versions.
+
 Requires *no* mods to use! All patched resource packs should be vanilla friendly!
+
 It merges item models, rewrites textures, and handles special fallbacks automatically.
 
 ## Usage
@@ -33,6 +36,7 @@ Some settings can be modified within the config.ini file, described as follows:
 + Add compatibility with [Fast Item Frames](https://modrinth.com/mod/fast-item-frames), my preferred item invisible item frame mod. Currently, CIT models will clip into other blocks due to Fast Item Frame's imposed offset when hiding item frames.
 + Shield CIT models seem to have incorrect rotation, unlike all other models. They can simply be rotated to correct position, so I've ignored this for now.
 + Improve user experience by adding a simple GUI to the patcher.
++ Emissive textures don't work, will look into adding compatibility later on.
 
 ## Special Thanks
 
