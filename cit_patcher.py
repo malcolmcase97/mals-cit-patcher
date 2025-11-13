@@ -323,7 +323,6 @@ def resolve_model_parents(data, src_folder, visited=None):
 # Correct fallbacks for special items/blocks
 FALLBACK_OVERRIDES = {
     "cake": "minecraft:item/cake",  # standard item model
-    "clock": "minecraft:item/clock",  # animated item
 
     # Shields – requires special renderer
     "shield": {
@@ -396,6 +395,40 @@ for mob in ["skeleton", "wither_skeleton"]:
     "type": "minecraft:special",
     "base": "minecraft:item/template_skull",
     "model": {"type": "minecraft:head", "kind": mob}
+}
+
+FALLBACK_OVERRIDES["clock"] = {
+    "type": "select",
+    "cases": [
+        {
+            "when": "overworld",
+            "model": {
+                "type": "range_dispatch",
+                "entries": [
+                    {"model": {"type": "model", "model": f"item/clock_{i:02}"}, "threshold": t}
+                    for i, t in enumerate(
+                        [0.0] + [i + 0.5 for i in range(1, 63)] + [64.0]
+                    )
+                ],
+                "property": "time",
+                "scale": 64,
+                "source": "daytime"
+            }
+        }
+    ],
+    "fallback": {
+        "type": "range_dispatch",
+        "entries": [
+            {"model": {"type": "model", "model": f"item/clock_{i:02}"}, "threshold": t}
+            for i, t in enumerate(
+                [0.0] + [i + 0.5 for i in range(1, 63)] + [64.0]
+            )
+        ],
+        "property": "time",
+        "scale": 64,
+        "source": "random"
+    },
+    "property": "context_dimension"
 }
 
 def process_cit_file(src_path, dest_items_path, generated_asset_root, generated_folder_name, block_names):
