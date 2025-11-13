@@ -1,6 +1,8 @@
 # Mal's CIT Resource Pack Patcher
 
-A Python script to patch **Custom Item Textures (CIT)** in Minecraft resource packs.  
+A Python script to patch **Custom Item Textures (CIT)** in Minecraft resource packs for compatibility with Minecraft 1.21.5+.
+Should be used on CIT resource packs that require Optifine on older Minecraft versions.
+Requires *no* mods to use! All patched resource packs should be vanilla friendly!
 It merges item models, rewrites textures, and handles special fallbacks automatically.
 
 ## Usage
