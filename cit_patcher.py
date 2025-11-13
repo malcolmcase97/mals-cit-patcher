@@ -150,17 +150,31 @@ def merge_item_json(item_json_path, case_when, case_model_path, fallback_model):
                         "model": case_model_path
                     }
                 })
-            model_block.setdefault("fallback", {
-                "type": "minecraft:model",
-                "model": fallback_model,
-                "tints": []
-            })
+            if isinstance(fallback_model, dict):
+                # Directly use complex/special fallback definition
+                model_block.setdefault("fallback", fallback_model)
+            else:
+                # Normal string fallback path
+                model_block.setdefault("fallback", {
+                    "type": "minecraft:model",
+                    "model": fallback_model,
+                    "tints": []
+                })
             write_json_pretty(item_json_path, existing)
             return
         except Exception as e:
             log(f"Could not merge into existing {item_json_path}: {e}")
 
     # create new structure if we couldn't merge
+    if isinstance(fallback_model, dict):
+        fallback_block = fallback_model
+    else:
+        fallback_block = {
+            "type": "minecraft:model",
+            "model": fallback_model,
+            "tints": []
+        }
+
     new_obj = {
         "model": {
             "type": "minecraft:select",
@@ -175,11 +189,7 @@ def merge_item_json(item_json_path, case_when, case_model_path, fallback_model):
                     }
                 }
             ],
-            "fallback": {
-                "type": "minecraft:model",
-                "model": fallback_model,
-                "tints": []
-            }
+            "fallback": fallback_block
         }
     }
     write_json_pretty(item_json_path, new_obj)
@@ -312,31 +322,81 @@ def resolve_model_parents(data, src_folder, visited=None):
 
 # Correct fallbacks for special items/blocks
 FALLBACK_OVERRIDES = {
-    "cake": "minecraft:item/cake",
-    "chest": "minecraft:item/chest_minecraft",
-    "clock": "minecraft:item/clock",
-    "shield": "minecraft:block/shield",
+    "cake": "minecraft:item/cake",  # standard item model
+    "clock": "minecraft:item/clock",  # animated item
+
+    # Shields – requires special renderer
+    "shield": {
+        "type": "minecraft:special",
+        "base": "minecraft:item/shield",
+        "model": {"type": "minecraft:shield"}
+    },
+
+    # Chests – block entity special model
+    "chest": {
+        "type": "minecraft:special",
+        "base": "minecraft:item/chest",
+        "model": {
+            "type": "minecraft:chest",
+            "texture": "minecraft:normal"
+        }
+    },
+
+    # Ominous banner special variant
+    "ominous_banner": {
+        "type": "minecraft:special",
+        "base": "minecraft:item/banner",
+        "model": {"type": "minecraft:banner", "pattern_color": "black"}
+    },
 }
 
-# Add all fence variants
-for wood in ["oak", "spruce", "birch", "jungle", "acacia", "dark_oak", "mangrove", "cherry", "bamboo", "crimson", "warped", "nether_brick", "pale_oak"]:
+# Add all fence, trapdoor, and sign variants
+for wood in ["oak", "spruce", "birch", "jungle", "acacia", "dark_oak",
+             "mangrove", "cherry", "bamboo", "crimson", "warped",
+             "nether_brick", "pale_oak"]:
     FALLBACK_OVERRIDES[f"{wood}_fence"] = f"minecraft:block/{wood}_fence_inventory"
     FALLBACK_OVERRIDES[f"{wood}_trapdoor"] = f"minecraft:block/{wood}_trapdoor_bottom"
     FALLBACK_OVERRIDES[f"{wood}_sign"] = f"minecraft:item/{wood}_sign"
 
-# Add colored beds and banners
-COLORS = ["white", "orange", "magenta", "light_blue", "yellow", "lime", "pink", "gray", "light_gray", "cyan", "purple", "blue", "brown", "green", "red", "black"]
+# Add colored beds and banners (special renderers)
+COLORS = ["white", "orange", "magenta", "light_blue", "yellow", "lime", "pink",
+          "gray", "light_gray", "cyan", "purple", "blue", "brown", "green", "red", "black"]
+
 for color in COLORS:
-    FALLBACK_OVERRIDES[f"{color}_bed"] = f"minecraft:block/{color}_bed"
-    FALLBACK_OVERRIDES[f"{color}_banner"] = f"minecraft:block/{color}_banner"
+    # Beds use special block entity model
+    FALLBACK_OVERRIDES[f"{color}_bed"] = {
+        "type": "minecraft:special",
+        "base": "minecraft:item/template_bed",
+        "model": {
+            "type": "minecraft:bed",
+            "texture": f"minecraft:{color}"
+        }
+    }
 
-# Special banners
-FALLBACK_OVERRIDES["ominous_banner"] = "minecraft:block/ominous_banner"
+    # Banners use special block entity model
+    FALLBACK_OVERRIDES[f"{color}_banner"] = {
+        "type": "minecraft:special",
+        "base": "minecraft:item/template_banner",
+        "model": {
+            "type": "minecraft:banner",
+            "color": color
+        }
+    }
 
-# Mob heads
-for mob in ["skeleton", "wither_skeleton", "zombie", "creeper", "player", "dragon", "piglin"]:
-    FALLBACK_OVERRIDES[f"{mob}_head"] = f"minecraft:block/{mob}_head"
-    FALLBACK_OVERRIDES[f"{mob}_skull"] = f"minecraft:block/{mob}_skull"
+# Mob heads (special block entity renderers)
+for mob in ["zombie", "creeper", "player", "dragon", "piglin"]:
+    FALLBACK_OVERRIDES[f"{mob}_head"] = {
+        "type": "minecraft:special",
+        "base": "minecraft:item/template_skull",
+        "model": {"type": "minecraft:head", "kind": mob}
+    }
+
+for mob in ["skeleton", "wither_skeleton"]:
+    FALLBACK_OVERRIDES[f"{mob}_skull"] = {
+    "type": "minecraft:special",
+    "base": "minecraft:item/template_skull",
+    "model": {"type": "minecraft:head", "kind": mob}
+}
 
 def process_cit_file(src_path, dest_items_path, generated_asset_root, generated_folder_name, block_names):
     src_path = Path(src_path)
