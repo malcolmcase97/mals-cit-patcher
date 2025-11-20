@@ -8,18 +8,67 @@ Requires *no* mods to use! All patched resource packs should be vanilla friendly
 
 It merges item models, rewrites textures, and handles special fallbacks automatically.
 
+## Requirements
+
+You must have **Python 3.8+** installed to run this script.
+
+You can download Python here:  
+[https://www.python.org/downloads/](https://www.python.org/downloads/)
+
 ## Usage
 
-1. **Open a terminal** in the folder containing `cit_patcher.py`.
-2. Run the script:
+1. **Download the ZIP** of **mals-cit-patcher** from this GitHub page.
+
+<div style="padding-left: 40px;">
+  <img src="assets/screenshots/1_Download.png" width="500">
+</div>
+
+2. **Unzip** the downloaded file.
+
+<div style="padding-left: 40px;">
+  <img src="assets/screenshots/2_Extract.png" width="500">
+</div>
+
+3. **Open the unzipped folder**, then **open a terminal** in the folder containing `cit_patcher.py`.
+
+<div style="padding-left: 40px;">
+  <img src="assets/screenshots/3_Open.png" width="500">
+</div>
+
+4. In the terminal, **run the script**:
 
 ```bash
 python cit_patcher.py
 ```
 
-3. The script will prompt you to enter the path to the resource pack (folder or .zip file).
-4. The script will then ask for a custom generated asset folder name.
-5. Patched pack is outputted as "Patched <original_pack_name>" (folder or zip).
+<div style="padding-left: 40px;">
+  <img src="assets/screenshots/4_Run.png" width="500">
+</div>
+
+5. When prompted, **enter the path to your resource pack.**
++ To get this path, right-click the resource pack and select **Copy as path**
+
+<div style="padding-left: 40px;">
+  <img src="assets/screenshots/5a_Copy.png" width="500">
+</div>
+
++ Then, paste it into the terminal with **Ctrl + V**
+
+<div style="padding-left: 40px;">
+  <img src="assets/screenshots/5b_Paste.png" width="500">
+</div>
+
+6. When asked for a **generated folder name**, type any name you want that reflects the pack.
+
+<div style="padding-left: 40px;">
+  <img src="assets/screenshots/6_Name.png" width="500">
+</div>
+
+7. When the script finishes, your patched resource pack will appear next to the original, named "Patched <original_pack_name>".
+
+<div style="padding-left: 40px;">
+  <img src="assets/screenshots/7_Output.png" width="500">
+</div>
 
 ## Configuration
 
