@@ -23,17 +23,23 @@ You can download Python here:
   <img src="assets/screenshots/1_Download.png" width="500">
 </div>
 
+---
+
 2. **Unzip** the downloaded file.
 
 <div style="padding-left: 40px;">
   <img src="assets/screenshots/2_Extract.png" width="500">
 </div>
 
+---
+
 3. **Open the unzipped folder**, then **open a terminal** in the folder containing `cit_patcher.py`.
 
 <div style="padding-left: 40px;">
   <img src="assets/screenshots/3_Open.png" width="500">
 </div>
+
+---
 
 4. In the terminal, **run the script**:
 
@@ -44,6 +50,8 @@ python cit_patcher.py
 <div style="padding-left: 40px;">
   <img src="assets/screenshots/4_Run.png" width="500">
 </div>
+
+---
 
 5. When prompted, **enter the path to your resource pack.**
 + To get this path, right-click the resource pack and select **Copy as path**
@@ -58,11 +66,15 @@ python cit_patcher.py
   <img src="assets/screenshots/5b_Paste.png" width="500">
 </div>
 
+---
+
 6. When asked for a **generated folder name**, type any name you want that reflects the pack.
 
 <div style="padding-left: 40px;">
   <img src="assets/screenshots/6_Name.png" width="500">
 </div>
+
+---
 
 7. When the script finishes, your patched resource pack will appear next to the original, named "Patched <original_pack_name>".
 
